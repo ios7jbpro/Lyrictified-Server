@@ -107,6 +107,24 @@ title = Song Title
 
 Files that do not match those patterns still work, but missing fields may need to be filled in from the admin panel.
 
+## Use it on Lyrictify App
+
+Doing this is very easy! Under `Services/LocalLyricsService.cs`, find this part:
+
+```
+    public LocalLyricsService()
+    {
+        _httpClient = new HttpClient
+        {
+            BaseAddress = new Uri("https://lyrictifiedserve.ios7.xyz/"),
+            Timeout = TimeSpan.FromSeconds(3)
+        };
+        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Lyrictified/0.1");
+    }
+```
+
+Change `https://lyrictifiedserve.ios7.xyz/` to your preferred host once you got Lyrictified-Server running!
+
 ## API
 
 Base URL:
