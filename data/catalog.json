@@ -1,0 +1,79 @@
+{
+  "entries": [
+    {
+      "id": "62685e5fc6003e7d",
+      "title": "Example Song",
+      "artist": "Example Artist",
+      "album": null,
+      "rating": 90,
+      "tags": [
+        {
+          "name": "Alternate Name",
+          "score": 0
+        },
+        {
+          "name": "Demo Remix",
+          "score": 0
+        },
+        {
+          "name": "Featured Artist",
+          "score": 0
+        }
+      ],
+      "exact": false,
+      "ignore": false,
+      "reverse": false,
+      "ignorePatterns": null
+    },
+    {
+      "id": "aad03c090b8d7d2b",
+      "title": "Yoru ni Kakeru",
+      "artist": "YOASOBI",
+      "album": null,
+      "rating": 0,
+      "tags": [
+        {
+          "name": "Into the Night",
+          "score": 5
+        },
+        {
+          "name": "JP version",
+          "score": 70
+        },
+        {
+          "name": "Yoru ni Kakeru",
+          "score": 90
+        }
+      ],
+      "exact": false,
+      "ignore": false,
+      "reverse": false,
+      "ignorePatterns": null
+    },
+    {
+      "id": "181a657a3e1cce9c",
+      "title": "Into the Night",
+      "artist": "YOASOBI",
+      "album": "E-SIDE",
+      "rating": 0,
+      "tags": [
+        {
+          "name": "English version",
+          "score": 70
+        },
+        {
+          "name": "Into the Night",
+          "score": 90
+        },
+        {
+          "name": "Yoru ni Kakeru",
+          "score": 5
+        }
+      ],
+      "exact": false,
+      "ignore": false,
+      "reverse": false,
+      "ignorePatterns": null
+    }
+  ]
+}
