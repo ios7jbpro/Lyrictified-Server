@@ -35,6 +35,7 @@ VerifyCatalogWriteAccess(settings.CatalogPath);
 
 builder.Services.AddSingleton(settings);
 builder.Services.AddSingleton<LyricsIndex>();
+builder.Services.AddHostedService<TrayIconService>();
 builder.WebHost.UseUrls($"http://{settings.BindAddress}:{settings.Port}");
 
 var app = builder.Build();
