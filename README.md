@@ -107,7 +107,7 @@ title = Song Title
 
 Files that do not match those patterns still work, but missing fields may need to be filled in from the admin panel.
 
-## Use it on Lyrictify App
+## Use it on Lyrictified App
 
 Doing this is very easy! Under `Services/LocalLyricsService.cs`, find this part:
 
