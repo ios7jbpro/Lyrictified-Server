@@ -22,7 +22,7 @@ public static class AdminPage
     .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 18px; }
     .login { max-width: 360px; margin-top: 80px; background: #fff; border: 1px solid #d9dde5; border-radius: 8px; padding: 18px; }
     .login form { display: grid; gap: 10px; }
-    .list { display: grid; gap: 12px; }
+    .list { display: grid; gap: 16px; }
     .item { background: #fff; border: 1px solid #d9dde5; border-radius: 8px; padding: 14px; display: grid; gap: 10px; }
     .row { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) minmax(140px, 1fr) 80px minmax(260px, 1fr) auto; gap: 10px; align-items: center; }
     .rules { display: grid; grid-template-columns: repeat(3, auto) minmax(260px, 1fr); gap: 12px; align-items: center; }
@@ -31,6 +31,16 @@ public static class AdminPage
     .patterns[hidden] { display: none; }
     .meta { color: #667085; font-size: 13px; }
     .status { color: #667085; min-height: 20px; }
+    .artist-group { margin-bottom: 16px; }
+    .artist-toggle { width: 100%; text-align: left; background: #e2e8f0; color: #151922; border: 1px solid #c4cad6; border-radius: 6px; padding: 10px 14px; font-weight: 600; font-size: 15px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+    .artist-toggle:hover { background: #d1d8e0; }
+    .albums-container { margin-top: 8px; margin-left: 12px; }
+    .album-group { margin-bottom: 10px; }
+    .album-toggle { width: 100%; text-align: left; background: #f1f5f9; color: #344054; border: 1px solid #d9dde5; border-radius: 6px; padding: 8px 12px; font-weight: 500; font-size: 14px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+    .album-toggle:hover { background: #e2e8f0; }
+    .songs-container { margin-top: 6px; margin-left: 12px; display: grid; gap: 10px; }
+    .songs-container[hidden] { display: none; }
+    .albums-container[hidden] { display: none; }
     @media (max-width: 850px) { .row { grid-template-columns: 1fr; } header { align-items: flex-start; flex-direction: column; } }
   </style>
 </head>
@@ -51,6 +61,8 @@ public static class AdminPage
       <div class="toolbar">
         <input id="filter" placeholder="Filter indexed files">
         <button id="refresh">Refresh index</button>
+        <button id="expand-all">Expand all</button>
+        <button id="collapse-all">Collapse all</button>
         <span id="status" class="status"></span>
       </div>
       <div id="list" class="list"></div>
@@ -94,29 +106,95 @@ public static class AdminPage
     function render() {
       const term = filter.value.toLowerCase();
       list.innerHTML = "";
-      lyrics
-        .filter(file => `${file.artist} ${file.title} ${file.album || ""} ${file.relativePath} ${formatTags(file.tags)}`.toLowerCase().includes(term))
-        .forEach(file => {
-          const item = document.createElement("article");
-          item.className = "item";
-          item.innerHTML = `
-            <div class="meta">${file.format.toUpperCase()} &middot; ${file.relativePath} &middot; ${file.id}</div>
-            <div class="row">
-              <input aria-label="Title" data-field="title" value="${escapeHtml(file.title)}">
-              <input aria-label="Artist" data-field="artist" value="${escapeHtml(file.artist)}">
-              <input aria-label="Album" data-field="album" value="${escapeHtml(file.album || "")}" placeholder="Album">
-              <input aria-label="Rating" data-field="rating" type="number" min="0" max="100" value="${file.rating}">
-              <input aria-label="Tags" data-field="tags" value="${escapeHtml(formatTags(file.tags))}" placeholder="tag | score, another tag | 20">
-              <button data-save="${file.id}">Save</button>
-            </div>
-            <div class="rules">
-              <label class="check"><input type="checkbox" data-field="exact" ${file.exact ? "checked" : ""}> Exact</label>
-              <label class="check"><input type="checkbox" data-field="ignore" ${file.ignore ? "checked" : ""}> Ignore</label>
-              <label class="check"><input type="checkbox" data-field="reverse" ${file.reverse ? "checked" : ""}> Reverse</label>
-              <input class="patterns" aria-label="Ignore patterns" data-field="ignorePatterns" value="${escapeHtml(file.ignorePatterns || "")}" placeholder="patterns like *blue*, *remix*" ${file.ignore ? "" : "hidden"}>
-            </div>`;
-          list.appendChild(item);
+
+      const filtered = lyrics.filter(file =>
+        `${file.artist} ${file.title} ${file.album || ""} ${file.relativePath} ${formatTags(file.tags)}`.toLowerCase().includes(term)
+      );
+
+      if (filtered.length === 0) {
+        list.innerHTML = `<div style="color:#667085;padding:12px 0">No matching files.</div>`;
+        return;
+      }
+
+      const byArtist = new Map();
+      for (const file of filtered) {
+        const artist = file.artist || "Unknown Artist";
+        if (!byArtist.has(artist)) byArtist.set(artist, new Map());
+        const byAlbum = byArtist.get(artist);
+        const album = file.album || "Singles";
+        if (!byAlbum.has(album)) byAlbum.set(album, []);
+        byAlbum.get(album).push(file);
+      }
+
+      const sortedArtists = Array.from(byArtist.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+
+      for (const [artist, byAlbum] of sortedArtists) {
+        const artistGroup = document.createElement("section");
+        artistGroup.className = "artist-group";
+
+        const artistSongCount = Array.from(byAlbum.values()).reduce((sum, songs) => sum + songs.length, 0);
+        const artistToggle = document.createElement("button");
+        artistToggle.className = "artist-toggle";
+        artistToggle.type = "button";
+        artistToggle.innerHTML = `<span>${escapeHtml(artist)}</span><span style="font-weight:400;color:#667085;font-size:13px">${artistSongCount} song${artistSongCount === 1 ? "" : "s"}</span>`;
+        artistGroup.appendChild(artistToggle);
+
+        const albumsContainer = document.createElement("div");
+        albumsContainer.className = "albums-container";
+        albumsContainer.hidden = true;
+
+        const sortedAlbums = Array.from(byAlbum.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+        for (const [album, songs] of sortedAlbums) {
+          const albumGroup = document.createElement("div");
+          albumGroup.className = "album-group";
+
+          const albumToggle = document.createElement("button");
+          albumToggle.className = "album-toggle";
+          albumToggle.type = "button";
+          albumToggle.innerHTML = `<span>${escapeHtml(album)}</span><span style="font-weight:400;color:#667085;font-size:13px">${songs.length} song${songs.length === 1 ? "" : "s"}</span>`;
+          albumGroup.appendChild(albumToggle);
+
+          const songsContainer = document.createElement("div");
+          songsContainer.className = "songs-container";
+          songsContainer.hidden = true;
+
+          for (const file of songs) {
+            const item = document.createElement("article");
+            item.className = "item";
+            item.innerHTML = `
+              <div class="meta">${file.format.toUpperCase()} &middot; ${file.relativePath} &middot; ${file.id}</div>
+              <div class="row">
+                <input aria-label="Title" data-field="title" value="${escapeHtml(file.title)}">
+                <input aria-label="Artist" data-field="artist" value="${escapeHtml(file.artist)}">
+                <input aria-label="Album" data-field="album" value="${escapeHtml(file.album || "")}" placeholder="Album">
+                <input aria-label="Rating" data-field="rating" type="number" min="0" max="100" value="${file.rating}">
+                <input aria-label="Tags" data-field="tags" value="${escapeHtml(formatTags(file.tags))}" placeholder="tag | score, another tag | 20">
+                <button data-save="${file.id}">Save</button>
+              </div>
+              <div class="rules">
+                <label class="check"><input type="checkbox" data-field="exact" ${file.exact ? "checked" : ""}> Exact</label>
+                <label class="check"><input type="checkbox" data-field="ignore" ${file.ignore ? "checked" : ""}> Ignore</label>
+                <label class="check"><input type="checkbox" data-field="reverse" ${file.reverse ? "checked" : ""}> Reverse</label>
+                <input class="patterns" aria-label="Ignore patterns" data-field="ignorePatterns" value="${escapeHtml(file.ignorePatterns || "")}" placeholder="patterns like *blue*, *remix*" ${file.ignore ? "" : "hidden"}>
+              </div>`;
+            songsContainer.appendChild(item);
+          }
+
+          albumGroup.appendChild(songsContainer);
+          albumsContainer.appendChild(albumGroup);
+
+          albumToggle.addEventListener("click", () => {
+            songsContainer.hidden = !songsContainer.hidden;
+          });
+        }
+
+        artistGroup.appendChild(albumsContainer);
+        list.appendChild(artistGroup);
+
+        artistToggle.addEventListener("click", () => {
+          albumsContainer.hidden = !albumsContainer.hidden;
         });
+      }
     }
 
     function escapeHtml(value) {
@@ -176,6 +254,14 @@ public static class AdminPage
       const data = await api("/admin/api/lyrics/refresh", { method: "POST", body: "{}" });
       status.textContent = `Indexed ${data.indexedFiles} file(s).`;
       await load();
+    });
+
+    document.querySelector("#expand-all").addEventListener("click", () => {
+      document.querySelectorAll(".albums-container, .songs-container").forEach(el => el.hidden = false);
+    });
+
+    document.querySelector("#collapse-all").addEventListener("click", () => {
+      document.querySelectorAll(".albums-container, .songs-container").forEach(el => el.hidden = true);
     });
 
     filter.addEventListener("input", render);
