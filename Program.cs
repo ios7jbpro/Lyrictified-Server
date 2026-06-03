@@ -153,9 +153,12 @@ app.MapGet("/lyrics/{id}/raw", (LyricsIndex index, string id) =>
         return Results.NotFound(new { error = "Lyrics file was not found." });
     }
 
-    var contentType = file.Format == "elrc"
-        ? "application/vnd.lyrictified.elrc+text"
-        : "application/vnd.lyrictified.lrc+text";
+    var contentType = file.Format switch
+    {
+        "elrc" => "application/vnd.lyrictified.elrc+text",
+        "ttml" => "application/vnd.lyrictified.ttml+xml",
+        _ => "application/vnd.lyrictified.lrc+text"
+    };
 
     return Results.File(file.AbsolutePath, contentType, Path.GetFileName(file.AbsolutePath));
 });

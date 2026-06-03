@@ -159,10 +159,12 @@ public static class AdminPage
           songsContainer.hidden = true;
 
           for (const file of songs) {
+            const isTtml = file.format === "ttml";
+            const ttmlBadge = isTtml ? `<span style="display:inline-flex;align-items:center;gap:4px;background:#fff7ed;color:#9a3412;border:1px solid #fdba74;border-radius:4px;padding:2px 8px;font-size:12px;font-weight:500;margin-right:8px;">TTML</span>` : "";
             const item = document.createElement("article");
             item.className = "item";
             item.innerHTML = `
-              <div class="meta">${file.format.toUpperCase()} &middot; ${file.relativePath} &middot; ${file.id}</div>
+              <div class="meta">${ttmlBadge}${file.format.toUpperCase()} &middot; ${file.relativePath} &middot; ${file.id}${isTtml ? " &middot; Word-by-word lyrics" : ""}</div>
               <div class="row">
                 <input aria-label="Title" data-field="title" value="${escapeHtml(file.title)}">
                 <input aria-label="Artist" data-field="artist" value="${escapeHtml(file.artist)}">

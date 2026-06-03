@@ -253,7 +253,8 @@ public sealed class LyricsIndex
     {
         var extension = Path.GetExtension(path);
         return extension.Equals(".lrc", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".elrc", StringComparison.OrdinalIgnoreCase);
+            || extension.Equals(".elrc", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".ttml", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int Score(LyricFile file, SearchRequest request)
