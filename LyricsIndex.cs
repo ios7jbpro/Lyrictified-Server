@@ -52,6 +52,11 @@ public sealed class LyricsIndex
                 .ThenBy(file => file.RelativePath)
                 .ToList();
 
+            foreach (var file in _lyrics)
+            {
+                LyricOffsetHelper.SyncOffsetFile(file.AbsolutePath, file.Offset);
+            }
+
             _logger.LogInformation(
                 "Loaded {EntryCount} catalog entrie(s) from {CatalogPath}; indexed {LyricCount} lyric file(s) from {LyricsDirectory}",
                 _catalog.Entries.Count,
@@ -87,6 +92,7 @@ public sealed class LyricsIndex
                     file.Ignore,
                     file.Reverse,
                     file.IgnorePatterns,
+                    file.Offset,
                     Score(file, request)))
                 .Where(result => result.Score > 0)
                 .OrderByDescending(result => result.Score)
@@ -123,6 +129,7 @@ public sealed class LyricsIndex
             entry.Ignore = update.Ignore;
             entry.Reverse = update.Reverse;
             entry.IgnorePatterns = EmptyToNull(update.IgnorePatterns);
+            entry.Offset = Math.Round(Math.Clamp(update.Offset, -2.0, 2.0), 1);
             entry.Tags = update.Tags
                 .Select(tag => new WeightedTag(tag.Name.Trim(), Math.Clamp(tag.Score, 0, 100)))
                 .Where(tag => tag.Name.Length > 0)
@@ -167,7 +174,8 @@ public sealed class LyricsIndex
             Exact: metadata?.Exact ?? false,
             Ignore: metadata?.Ignore ?? false,
             Reverse: metadata?.Reverse ?? false,
-            IgnorePatterns: metadata?.IgnorePatterns ?? "");
+            IgnorePatterns: metadata?.IgnorePatterns ?? "",
+            Offset: metadata?.Offset ?? 0);
     }
 
     private static string InferTitle(string fileName, string pathArtist, bool hasArtistAlbumFolders)
@@ -252,9 +260,11 @@ public sealed class LyricsIndex
     private static bool IsSupportedLyricFile(string path)
     {
         var extension = Path.GetExtension(path);
-        return extension.Equals(".lrc", StringComparison.OrdinalIgnoreCase)
+        var fileName = Path.GetFileName(path);
+        return (extension.Equals(".lrc", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".elrc", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".ttml", StringComparison.OrdinalIgnoreCase);
+            || extension.Equals(".ttml", StringComparison.OrdinalIgnoreCase))
+            && !fileName.Contains(".offset.", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int Score(LyricFile file, SearchRequest request)

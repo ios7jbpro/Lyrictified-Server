@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Lyrictified.Server;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,7 +17,8 @@ var settings = builder.Configuration.GetSection("Lyrictified").Get<LyrictifiedSe
 settings = settings with
 {
     LyricsDirectory = Path.GetFullPath(settings.LyricsDirectory, builder.Environment.ContentRootPath),
-    CatalogPath = Path.GetFullPath(settings.CatalogPath, builder.Environment.ContentRootPath)
+    CatalogPath = Path.GetFullPath(settings.CatalogPath, builder.Environment.ContentRootPath),
+    PendingSubmissionsPath = Path.GetFullPath(settings.PendingSubmissionsPath, builder.Environment.ContentRootPath)
 };
 
 if (settings.Port is < 1 or > 65535)
@@ -31,16 +33,20 @@ if (string.IsNullOrWhiteSpace(settings.BindAddress))
 
 Directory.CreateDirectory(settings.LyricsDirectory);
 Directory.CreateDirectory(Path.GetDirectoryName(settings.CatalogPath)!);
+Directory.CreateDirectory(Path.GetDirectoryName(settings.PendingSubmissionsPath)!);
 VerifyCatalogWriteAccess(settings.CatalogPath);
+VerifyCatalogWriteAccess(settings.PendingSubmissionsPath);
 
 builder.Services.AddSingleton(settings);
 builder.Services.AddSingleton<LyricsIndex>();
+builder.Services.AddSingleton<PendingSubmissionStore>();
 builder.Services.AddHostedService<TrayIconService>();
 builder.WebHost.UseUrls($"http://{settings.BindAddress}:{settings.Port}");
 
 var app = builder.Build();
 
-app.Services.GetRequiredService<LyricsIndex>().Refresh();
+var index = app.Services.GetRequiredService<LyricsIndex>();
+index.Refresh();
 
 app.Use(async (context, next) =>
 {
@@ -118,6 +124,32 @@ app.MapGet("/health", (LyricsIndex index) => Results.Ok(new
     indexedFiles = index.All.Count
 }));
 
+app.MapGet("/", (HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.Content(UserPage.Html, "text/html; charset=utf-8");
+});
+
+app.MapGet("/user", (HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.Content(UserPage.Html, "text/html; charset=utf-8");
+});
+
+app.MapGet("/submit", (HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.Content(SubmitPage.Html, "text/html; charset=utf-8");
+});
+
+app.MapGet("/assets/logo", (IWebHostEnvironment environment) =>
+{
+    var path = Path.Combine(environment.ContentRootPath, "lyrictified-server.png");
+    return File.Exists(path)
+        ? Results.File(path, "image/png")
+        : Results.NotFound();
+});
+
 app.MapGet("/search", (
     LyricsIndex index,
     string? q,
@@ -153,6 +185,17 @@ app.MapGet("/lyrics/{id}/raw", (LyricsIndex index, string id) =>
         return Results.NotFound(new { error = "Lyrics file was not found." });
     }
 
+    var path = file.AbsolutePath;
+    if (file.Offset != 0)
+    {
+        var offsetPath = LyricOffsetHelper.GetOffsetFilePath(path);
+        if (!File.Exists(offsetPath))
+        {
+            LyricOffsetHelper.SyncOffsetFile(path, file.Offset);
+        }
+        path = offsetPath;
+    }
+
     var contentType = file.Format switch
     {
         "elrc" => "application/vnd.lyrictified.elrc+text",
@@ -160,13 +203,59 @@ app.MapGet("/lyrics/{id}/raw", (LyricsIndex index, string id) =>
         _ => "application/vnd.lyrictified.lrc+text"
     };
 
-    return Results.File(file.AbsolutePath, contentType, Path.GetFileName(file.AbsolutePath));
+    return Results.File(path, contentType, Path.GetFileName(file.AbsolutePath));
+});
+
+app.MapGet("/api/submissions/status", (HttpContext context, PendingSubmissionStore submissions) =>
+{
+    var isAdmin = IsAdmin(context, settings);
+    var submitterKey = GetSubmitterKey(context);
+    return Results.Ok(new
+    {
+        isAdmin,
+        rateLimitHours = PendingSubmissionStore.RateLimitWindow.TotalHours,
+        nextAllowedAt = isAdmin ? null : submissions.NextAllowedAt(submitterKey)
+    });
+});
+
+app.MapPost("/api/submissions", async (HttpContext context, PendingSubmissionStore submissions) =>
+{
+    var isAdmin = IsAdmin(context, settings);
+    var submitterKey = GetSubmitterKey(context);
+
+    try
+    {
+        var request = await ReadSubmissionRequest(context);
+        var submission = submissions.Submit(request, submitterKey, bypassRateLimit: isAdmin);
+        return Results.Ok(new
+        {
+            id = submission.Id,
+            submittedAt = submission.SubmittedAt,
+            suggestedRelativePath = submission.SuggestedRelativePath
+        });
+    }
+    catch (SubmissionRateLimitException exception)
+    {
+        return Results.Json(
+            new { error = "You can only submit lyrics once every 2 hours.", nextAllowedAt = exception.NextAllowedAt },
+            statusCode: StatusCodes.Status429TooManyRequests);
+    }
+    catch (ArgumentException exception)
+    {
+        return Results.BadRequest(new { error = exception.Message });
+    }
 });
 
 app.MapGet("/admin", (HttpContext context) =>
 {
     context.Response.Headers.CacheControl = "no-store";
     return Results.Content(AdminPage.Html, "text/html; charset=utf-8");
+});
+
+app.MapGet("/admin/requests", (HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.Content(AdminRequestsPage.Html, "text/html; charset=utf-8");
 });
 
 app.MapPost("/admin/login", async (HttpContext context) =>
@@ -220,6 +309,51 @@ app.MapPost("/admin/api/lyrics/refresh", (HttpContext context, LyricsIndex index
     return Results.Ok(new { indexedFiles = index.All.Count });
 });
 
+app.MapGet("/admin/api/submissions", (HttpContext context, PendingSubmissionStore submissions) =>
+{
+    if (!IsAdmin(context, settings))
+    {
+        return Results.Unauthorized();
+    }
+
+    return Results.Ok(new { submissions = submissions.All });
+});
+
+app.MapPost("/admin/api/submissions/{id}/approve", (HttpContext context, PendingSubmissionStore submissions, LyricsIndex index, string id) =>
+{
+    if (!IsAdmin(context, settings))
+    {
+        return Results.Unauthorized();
+    }
+
+    var result = submissions.Approve(id);
+    if (result is null)
+    {
+        return Results.NotFound(new { error = "Submission was not found." });
+    }
+
+    index.Refresh();
+    return Results.Ok(new
+    {
+        submission = result.Submission,
+        relativePath = result.RelativePath,
+        indexedFiles = index.All.Count
+    });
+});
+
+app.MapPost("/admin/api/submissions/{id}/reject", (HttpContext context, PendingSubmissionStore submissions, string id) =>
+{
+    if (!IsAdmin(context, settings))
+    {
+        return Results.Unauthorized();
+    }
+
+    var rejected = submissions.Reject(id);
+    return rejected is null
+        ? Results.NotFound(new { error = "Submission was not found." })
+        : Results.Ok(new { submission = rejected });
+});
+
 app.MapPut("/admin/api/lyrics/{id}", (HttpContext context, LyricsIndex index, string id, LyricMetadataUpdate update) =>
 {
     if (!IsAdmin(context, settings))
@@ -247,6 +381,68 @@ static string CreateAdminToken(LyrictifiedSettings settings)
     return Convert.ToHexString(bytes).ToLowerInvariant();
 }
 
+static string GetSubmitterKey(HttpContext context)
+{
+    var forwardedFor = context.Request.Headers["X-Forwarded-For"].ToString();
+    var forwardedAddress = forwardedFor
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .FirstOrDefault();
+
+    if (!string.IsNullOrWhiteSpace(forwardedAddress))
+    {
+        return forwardedAddress;
+    }
+
+    return context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+}
+
+static async Task<LyricSubmissionRequest> ReadSubmissionRequest(HttpContext context)
+{
+    if (context.Request.HasFormContentType)
+    {
+        var form = await context.Request.ReadFormAsync();
+        var format = form["format"].ToString();
+        var file = form.Files["lyricsFile"];
+        if (file is null || file.Length == 0)
+        {
+            throw new ArgumentException("Upload a lyrics file.");
+        }
+
+        if (!PendingSubmissionStore.IsAllowedFileNameForFormat(file.FileName, format))
+        {
+            var expectedExtension = PendingSubmissionStore.NormalizeFormat(format);
+            throw new ArgumentException($"Uploaded file must use the .{expectedExtension} extension.");
+        }
+
+        const long maxUploadBytes = 1_000_000;
+        if (file.Length > maxUploadBytes)
+        {
+            throw new ArgumentException("Lyrics file is too large.");
+        }
+
+        using var reader = new StreamReader(file.OpenReadStream(), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        var lyrics = await reader.ReadToEndAsync();
+        return new LyricSubmissionRequest(
+            form["title"].ToString(),
+            form["artist"].ToString(),
+            form["album"].ToString(),
+            format,
+            lyrics);
+    }
+
+    if (context.Request.ContentType?.Contains("application/json", StringComparison.OrdinalIgnoreCase) == true)
+    {
+        var request = await context.Request.ReadFromJsonAsync<LyricSubmissionRequest>(new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        });
+
+        return request ?? throw new ArgumentException("Submission body is required.");
+    }
+
+    throw new ArgumentException("Submission must be JSON or multipart form data.");
+}
+
 static bool FixedTimeEquals(string left, string right)
 {
     var leftBytes = Encoding.UTF8.GetBytes(left);
@@ -257,7 +453,12 @@ static bool FixedTimeEquals(string left, string right)
 static bool ShouldCaptureResponseBody(PathString path)
 {
     return !path.StartsWithSegments("/lyrics", StringComparison.OrdinalIgnoreCase)
-        && !path.StartsWithSegments("/admin", StringComparison.OrdinalIgnoreCase);
+        && !path.StartsWithSegments("/admin", StringComparison.OrdinalIgnoreCase)
+        && !path.StartsWithSegments("/api/submissions", StringComparison.OrdinalIgnoreCase)
+        && !path.StartsWithSegments("/assets", StringComparison.OrdinalIgnoreCase)
+        && !path.Equals("/", StringComparison.OrdinalIgnoreCase)
+        && !path.Equals("/user", StringComparison.OrdinalIgnoreCase)
+        && !path.Equals("/submit", StringComparison.OrdinalIgnoreCase);
 }
 
 static string SummarizeResponse(HttpResponse response, MemoryStream capturedBody)

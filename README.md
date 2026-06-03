@@ -9,6 +9,8 @@ The first version is intentionally small:
 - Stores admin metadata in `data/catalog.json`
 - Searches matching `.lrc` and `.elrc` files by title, artist, path, and tags
 - Serves the raw lyric file over a local HTTP API
+- Provides a public lyrics search and download page
+- Accepts public lyric submissions for admin approval
 - Provides a password-protected admin page
 - Logs each request, response status, duration, and API response summary to the console
 
@@ -24,6 +26,8 @@ The default server URL is:
 http://127.0.0.1:32145
 ```
 
+Open that URL in a browser to search and download lyrics. Use the "Log in as admin" button, or open `/admin`, to manage indexed metadata.
+
 ## Configure
 
 Edit `appsettings.json`:
@@ -35,6 +39,7 @@ Edit `appsettings.json`:
     "BindAddress": "127.0.0.1",
     "LyricsDirectory": "lyrics",
     "CatalogPath": "data/catalog.json",
+    "PendingSubmissionsPath": "data/pending-submissions.json",
     "AdminPassword": "change-me"
   }
 }
@@ -46,6 +51,12 @@ Admin changes are saved to the configured `CatalogPath`, usually:
 
 ```text
 data/catalog.json
+```
+
+Pending public lyric submissions and their two-hour submitter rate-limit records are saved to:
+
+```text
+data/pending-submissions.json
 ```
 
 Keep this file when updating, moving, or republishing the server. The server also writes a safety backup next to it:
@@ -318,7 +329,30 @@ Admin UI:
 GET /admin
 ```
 
-The admin UI lets you refresh the index, edit display title/artist/album, add tags, and set a rating from `0` to `100`. Rating boosts the whole file.
+Public UI:
+
+```http
+GET /
+GET /user
+GET /submit
+```
+
+The public UI lets regular users search lyrics and download matching `.lrc`, `.elrc`, or `.ttml` files. It only calls the read-only `/search` and `/lyrics/{id}/raw` endpoints.
+Users can also open `/submit`, or use the "Submit your own!" button, to submit lyrics for review by pasting text or uploading a file. Uploaded files must match the selected lyrics type: `.lrc` for regular LRC, `.elrc` for enhanced LRC, and `.ttml` for TTML. A normal submitter can submit once every 2 hours, tracked by their forwarded IP address when present and otherwise their direct remote IP. Logged-in admins bypass that public rate limit.
+
+The admin UI lets you refresh the index, edit display title/artist/album, add tags, and set a rating from `0` to `100`. Rating boosts the whole file. Admin API routes under `/admin/api/*` require the admin login cookie, so regular users cannot change catalog metadata through the public page.
+
+Use the admin page's "Pending requests" button, or open `/admin/requests`, to review submitted lyrics. Approving a request writes it into the lyrics folder and refreshes the index. Album submissions are saved as:
+
+```text
+Artist/Album/Song Title.ext
+```
+
+Submissions without an album are saved as:
+
+```text
+Artist/Song Title - Artist.ext
+```
 
 Tags can also have their own scores:
 

@@ -8,6 +8,7 @@ public sealed record LyrictifiedSettings
     public string BindAddress { get; init; } = "127.0.0.1";
     public string LyricsDirectory { get; init; } = "lyrics";
     public string CatalogPath { get; init; } = "data/catalog.json";
+    public string PendingSubmissionsPath { get; init; } = "data/pending-submissions.json";
     public string AdminPassword { get; init; } = "change-me";
 }
 
@@ -43,7 +44,8 @@ public sealed record LyricFile(
     bool Exact,
     bool Ignore,
     bool Reverse,
-    string IgnorePatterns)
+    string IgnorePatterns,
+    double Offset)
 {
     [JsonIgnore]
     public string TitleSearchText => LyricsIndex.Normalize(Title);
@@ -72,6 +74,7 @@ public sealed record SearchResult(
     bool Ignore,
     bool Reverse,
     string IgnorePatterns,
+    double Offset,
     int Score);
 
 public sealed record LyricMetadataUpdate(
@@ -83,7 +86,30 @@ public sealed record LyricMetadataUpdate(
     bool Exact,
     bool Ignore,
     bool Reverse,
-    string? IgnorePatterns);
+    string? IgnorePatterns,
+    double Offset);
+
+public sealed record LyricSubmissionRequest(
+    string? Title,
+    string? Artist,
+    string? Album,
+    string? Format,
+    string? Lyrics);
+
+public sealed record PendingLyricSubmission(
+    string Id,
+    string Title,
+    string Artist,
+    string Album,
+    string Format,
+    string Lyrics,
+    string SubmitterKey,
+    DateTimeOffset SubmittedAt,
+    string SuggestedRelativePath);
+
+public sealed record SubmissionApprovalResult(
+    PendingLyricSubmission Submission,
+    string RelativePath);
 
 [JsonConverter(typeof(WeightedTagJsonConverter))]
 public sealed record WeightedTag(string Name, int Score);
@@ -105,4 +131,17 @@ public sealed class CatalogEntry
     public bool Ignore { get; set; }
     public bool Reverse { get; set; }
     public string? IgnorePatterns { get; set; }
+    public double Offset { get; set; }
+}
+
+public sealed class PendingSubmissionsFile
+{
+    public List<PendingLyricSubmission> Submissions { get; set; } = [];
+    public List<SubmissionRateLimitEntry> RateLimits { get; set; } = [];
+}
+
+public sealed class SubmissionRateLimitEntry
+{
+    public string SubmitterKey { get; set; } = "";
+    public DateTimeOffset SubmittedAt { get; set; }
 }

@@ -2,7 +2,7 @@
   "entries": [
     {
       "id": "62685e5fc6003e7d",
-      "title": "Example Song Persisted",
+      "title": "Example Song",
       "artist": "Example Artist",
       "album": null,
       "rating": 90,
@@ -23,7 +23,8 @@
       "exact": false,
       "ignore": false,
       "reverse": false,
-      "ignorePatterns": null
+      "ignorePatterns": null,
+      "offset": -1
     },
     {
       "id": "aad03c090b8d7d2b",
@@ -48,7 +49,8 @@
       "exact": false,
       "ignore": false,
       "reverse": false,
-      "ignorePatterns": null
+      "ignorePatterns": null,
+      "offset": 0
     },
     {
       "id": "181a657a3e1cce9c",
@@ -73,7 +75,8 @@
       "exact": false,
       "ignore": false,
       "reverse": false,
-      "ignorePatterns": null
+      "ignorePatterns": null,
+      "offset": 0
     }
   ]
 }

@@ -19,6 +19,8 @@ public static class AdminPage
     button { border: 1px solid #1e5eff; background: #1e5eff; color: #fff; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
     button.secondary { background: #fff; color: #1e5eff; }
     input { border: 1px solid #c4cad6; border-radius: 6px; padding: 8px 10px; }
+    .button { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #1e5eff; background: #fff; color: #1e5eff; border-radius: 6px; padding: 8px 12px; cursor: pointer; text-decoration: none; }
+    .header-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 18px; }
     .login { max-width: 360px; margin-top: 80px; background: #fff; border: 1px solid #d9dde5; border-radius: 8px; padding: 18px; }
     .login form { display: grid; gap: 10px; }
@@ -47,7 +49,10 @@ public static class AdminPage
 <body>
   <header>
     <h1>Lyrictified Admin</h1>
-    <form method="post" action="/admin/logout"><button class="secondary">Log out</button></form>
+    <div class="header-actions">
+      <a class="button" href="/admin/requests">Pending requests</a>
+      <form method="post" action="/admin/logout"><button class="secondary">Log out</button></form>
+    </div>
   </header>
   <main>
     <section id="login" class="login" hidden>
@@ -178,6 +183,11 @@ public static class AdminPage
                 <label class="check"><input type="checkbox" data-field="ignore" ${file.ignore ? "checked" : ""}> Ignore</label>
                 <label class="check"><input type="checkbox" data-field="reverse" ${file.reverse ? "checked" : ""}> Reverse</label>
                 <input class="patterns" aria-label="Ignore patterns" data-field="ignorePatterns" value="${escapeHtml(file.ignorePatterns || "")}" placeholder="patterns like *blue*, *remix*" ${file.ignore ? "" : "hidden"}>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+                <label style="font-size:13px;color:#344054;">Timing offset:</label>
+                <input type="range" data-field="offset" min="-2" max="2" step="0.1" value="${(file.offset || 0).toFixed(1)}" style="width:140px;">
+                <span class="offset-label" style="font-size:13px;color:#344054;min-width:48px;">${((file.offset || 0) >= 0 ? "+" : "") + (file.offset || 0).toFixed(1)}s</span>
               </div>`;
             songsContainer.appendChild(item);
           }
@@ -239,7 +249,8 @@ public static class AdminPage
         exact: item.querySelector("[data-field=exact]").checked,
         ignore: item.querySelector("[data-field=ignore]").checked,
         reverse: item.querySelector("[data-field=reverse]").checked,
-        ignorePatterns: item.querySelector("[data-field=ignorePatterns]").value
+        ignorePatterns: item.querySelector("[data-field=ignorePatterns]").value,
+        offset: parseFloat(item.querySelector("[data-field=offset]").value)
       };
       await api(`/admin/api/lyrics/${id}`, { method: "PUT", body: JSON.stringify(update) });
       status.textContent = "Saved.";
@@ -250,6 +261,13 @@ public static class AdminPage
       if (event.target.dataset.field !== "ignore") return;
       const item = event.target.closest(".item");
       item.querySelector("[data-field=ignorePatterns]").hidden = !event.target.checked;
+    });
+
+    list.addEventListener("input", event => {
+      if (event.target.dataset.field !== "offset") return;
+      const label = event.target.closest(".item").querySelector(".offset-label");
+      const val = parseFloat(event.target.value);
+      label.textContent = (val >= 0 ? "+" : "") + val.toFixed(1) + "s";
     });
 
     document.querySelector("#refresh").addEventListener("click", async () => {
