@@ -40,12 +40,18 @@ Edit `appsettings.json`:
     "LyricsDirectory": "lyrics",
     "CatalogPath": "data/catalog.json",
     "PendingSubmissionsPath": "data/pending-submissions.json",
-    "AdminPassword": "change-me"
+    "AdminPasswordHash": ""
   }
 }
 ```
 
-Change `AdminPassword` before using the admin page for real.
+Generate an admin password hash before using the admin page:
+
+```powershell
+dotnet run -- --hash-admin-password
+```
+
+Paste the printed value into `AdminPasswordHash`. Password hashes are versioned, salted, and verified with PBKDF2-SHA256. If an older config still uses `AdminPassword`, the server accepts it only as a legacy fallback and logs a warning so you can replace it.
 
 Admin changes are saved to the configured `CatalogPath`, usually:
 
@@ -338,7 +344,7 @@ GET /submit
 ```
 
 The public UI lets regular users search lyrics and download matching `.lrc`, `.elrc`, or `.ttml` files. It only calls the read-only `/search` and `/lyrics/{id}/raw` endpoints.
-Users can also open `/submit`, or use the "Submit your own!" button, to submit lyrics for review by pasting text or uploading a file. Uploaded files must match the selected lyrics type: `.lrc` for regular LRC, `.elrc` for enhanced LRC, and `.ttml` for TTML. A normal submitter can submit once every 2 hours, tracked by their forwarded IP address when present and otherwise their direct remote IP. Logged-in admins bypass that public rate limit.
+Users can also open `/submit`, or use the "Submit your own!" button, to submit lyrics for review by pasting text or uploading a file. Uploaded files must match the selected lyrics type: `.lrc` for regular LRC, `.elrc` for enhanced LRC, and `.ttml` for TTML. A normal submitter can submit once every 2 hours, tracked by their forwarded IP address when present and otherwise their direct remote IP. Logged-in admins can submit from the same page without the public rate limit, and their submissions are auto-approved immediately.
 
 The admin UI lets you refresh the index, edit display title/artist/album, add tags, and set a rating from `0` to `100`. Rating boosts the whole file. Admin API routes under `/admin/api/*` require the admin login cookie, so regular users cannot change catalog metadata through the public page.
 

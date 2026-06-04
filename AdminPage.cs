@@ -50,6 +50,7 @@ public static class AdminPage
   <header>
     <h1>Lyrictified Admin</h1>
     <div class="header-actions">
+      <a class="button" href="/submit">Submit lyrics</a>
       <a class="button" href="/admin/requests">Pending requests</a>
       <form method="post" action="/admin/logout"><button class="secondary">Log out</button></form>
     </div>

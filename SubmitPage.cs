@@ -35,6 +35,9 @@ public static class SubmitPage
     .tab.active { border-color: #1e5eff; background: #fff; color: #1e5eff; }
     .source-panel[hidden] { display: none; }
     .file-row { display: grid; gap: 8px; padding: 14px; border: 1px dashed #aeb7c6; border-radius: 8px; background: #f8fafc; }
+    .submit-actions { display: grid; justify-items: start; gap: 8px; }
+    .admin-approval-note { margin: 0; color: #027a48; font-size: 13px; font-weight: 600; }
+    .admin-approval-note[hidden] { display: none; }
     .rate-limit { color: #344054; font-weight: 600; line-height: 1.45; }
     .rate-limit[hidden] { display: none; }
     .status { min-height: 22px; margin-top: 14px; color: #667085; }
@@ -103,7 +106,10 @@ public static class SubmitPage
             </div>
           </div>
         </div>
-        <button type="submit">Submit for review</button>
+        <div class="submit-actions">
+          <button id="submit-button" type="submit">Submit for review</button>
+          <p id="admin-approval-note" class="admin-approval-note" hidden>Since you are signed in as an admin, these lyrics will be auto-approved and added immediately.</p>
+        </div>
         <div id="status" class="status" role="status"></div>
       </form>
     </section>
@@ -113,6 +119,8 @@ public static class SubmitPage
     const intro = document.querySelector("#intro");
     const rateLimit = document.querySelector("#rate-limit");
     const status = document.querySelector("#status");
+    const submitButton = document.querySelector("#submit-button");
+    const adminApprovalNote = document.querySelector("#admin-approval-note");
     const format = document.querySelector("#format");
     const lyrics = document.querySelector("#lyrics");
     const lyricsFile = document.querySelector("#lyrics-file");
@@ -199,6 +207,12 @@ public static class SubmitPage
 
         form.reset();
         updateFileAccept();
+        if (data.autoApproved) {
+          status.className = "status success";
+          status.textContent = `Added and auto-approved as ${data.relativePath}.`;
+          return;
+        }
+
         if (!isAdmin) {
           const nextAllowedAt = new Date(new Date(data.submittedAt).getTime() + 2 * 60 * 60 * 1000);
           intro.hidden = true;
@@ -232,11 +246,13 @@ public static class SubmitPage
         intro.hidden = false;
         form.hidden = false;
         rateLimit.hidden = true;
+        updateAdminCopy();
       } catch {
         isAdmin = false;
         intro.hidden = false;
         form.hidden = false;
         rateLimit.hidden = true;
+        updateAdminCopy();
       }
     }
 
@@ -271,6 +287,14 @@ public static class SubmitPage
 
     function fileMatchesFormat(file) {
       return file.name.toLowerCase().endsWith(`.${format.value}`);
+    }
+
+    function updateAdminCopy() {
+      intro.textContent = isAdmin
+        ? "Add a new lyrics file directly to the indexed lyrics folder."
+        : "Submitted lyrics stay pending until an admin reviews and approves them.";
+      submitButton.textContent = isAdmin ? "Add and auto-approve" : "Submit for review";
+      adminApprovalNote.hidden = !isAdmin;
     }
 
     updateFileAccept();

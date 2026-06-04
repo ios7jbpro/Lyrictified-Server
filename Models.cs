@@ -9,7 +9,8 @@ public sealed record LyrictifiedSettings
     public string LyricsDirectory { get; init; } = "lyrics";
     public string CatalogPath { get; init; } = "data/catalog.json";
     public string PendingSubmissionsPath { get; init; } = "data/pending-submissions.json";
-    public string AdminPassword { get; init; } = "change-me";
+    public string AdminPasswordHash { get; init; } = "";
+    public string AdminPassword { get; init; } = "";
 }
 
 public sealed record SearchRequest(string? Query, string? Song, string? Artist, string? Album, int Limit)

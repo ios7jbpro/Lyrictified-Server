@@ -1,8 +1,12 @@
 using System.Diagnostics;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Lyrictified.Server;
+
+if (TryWriteAdminPasswordHash(args))
+{
+    return;
+}
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -38,6 +42,7 @@ VerifyCatalogWriteAccess(settings.CatalogPath);
 VerifyCatalogWriteAccess(settings.PendingSubmissionsPath);
 
 builder.Services.AddSingleton(settings);
+builder.Services.AddSingleton<AdminAuthService>();
 builder.Services.AddSingleton<LyricsIndex>();
 builder.Services.AddSingleton<PendingSubmissionStore>();
 builder.Services.AddHostedService<TrayIconService>();
@@ -208,7 +213,7 @@ app.MapGet("/lyrics/{id}/raw", (LyricsIndex index, string id) =>
 
 app.MapGet("/api/submissions/status", (HttpContext context, PendingSubmissionStore submissions) =>
 {
-    var isAdmin = IsAdmin(context, settings);
+    var isAdmin = IsAdmin(context);
     var submitterKey = GetSubmitterKey(context);
     return Results.Ok(new
     {
@@ -218,20 +223,37 @@ app.MapGet("/api/submissions/status", (HttpContext context, PendingSubmissionSto
     });
 });
 
-app.MapPost("/api/submissions", async (HttpContext context, PendingSubmissionStore submissions) =>
+app.MapPost("/api/submissions", async (HttpContext context, PendingSubmissionStore submissions, LyricsIndex index) =>
 {
-    var isAdmin = IsAdmin(context, settings);
+    var isAdmin = IsAdmin(context);
     var submitterKey = GetSubmitterKey(context);
 
     try
     {
         var request = await ReadSubmissionRequest(context);
         var submission = submissions.Submit(request, submitterKey, bypassRateLimit: isAdmin);
+        if (isAdmin)
+        {
+            var result = submissions.Approve(submission.Id)
+                ?? throw new InvalidOperationException("Admin submission could not be auto-approved.");
+            index.Refresh();
+            return Results.Ok(new
+            {
+                id = result.Submission.Id,
+                submittedAt = result.Submission.SubmittedAt,
+                suggestedRelativePath = result.Submission.SuggestedRelativePath,
+                autoApproved = true,
+                relativePath = result.RelativePath,
+                indexedFiles = index.All.Count
+            });
+        }
+
         return Results.Ok(new
         {
             id = submission.Id,
             submittedAt = submission.SubmittedAt,
-            suggestedRelativePath = submission.SuggestedRelativePath
+            suggestedRelativePath = submission.SuggestedRelativePath,
+            autoApproved = false
         });
     }
     catch (SubmissionRateLimitException exception)
@@ -258,39 +280,42 @@ app.MapGet("/admin/requests", (HttpContext context) =>
     return Results.Content(AdminRequestsPage.Html, "text/html; charset=utf-8");
 });
 
-app.MapPost("/admin/login", async (HttpContext context) =>
+app.MapPost("/admin/login", async (HttpContext context, AdminAuthService auth) =>
 {
     var form = await context.Request.ReadFormAsync();
     var password = form["password"].ToString();
 
-    if (!FixedTimeEquals(password, settings.AdminPassword))
+    if (!auth.VerifyPassword(password))
     {
         return Results.Unauthorized();
     }
 
+    var expiresAt = DateTimeOffset.UtcNow.AddHours(12);
     context.Response.Cookies.Append(
         "lyrictified_admin",
-        CreateAdminToken(settings),
+        auth.CreateSessionToken(expiresAt),
         new CookieOptions
         {
             HttpOnly = true,
             SameSite = SameSiteMode.Strict,
-            Secure = false,
-            Expires = DateTimeOffset.UtcNow.AddHours(12)
+            Secure = context.Request.IsHttps,
+            Expires = expiresAt
         });
 
     return Results.Redirect("/admin");
 });
 
-app.MapPost("/admin/logout", (HttpContext context) =>
+app.MapPost("/admin/logout", (HttpContext context, AdminAuthService auth) =>
 {
+    context.Request.Cookies.TryGetValue("lyrictified_admin", out var token);
+    auth.RevokeSessionToken(token);
     context.Response.Cookies.Delete("lyrictified_admin");
     return Results.Redirect("/admin");
 });
 
 app.MapGet("/admin/api/lyrics", (HttpContext context, LyricsIndex index) =>
 {
-    if (!IsAdmin(context, settings))
+    if (!IsAdmin(context))
     {
         return Results.Unauthorized();
     }
@@ -300,7 +325,7 @@ app.MapGet("/admin/api/lyrics", (HttpContext context, LyricsIndex index) =>
 
 app.MapPost("/admin/api/lyrics/refresh", (HttpContext context, LyricsIndex index) =>
 {
-    if (!IsAdmin(context, settings))
+    if (!IsAdmin(context))
     {
         return Results.Unauthorized();
     }
@@ -311,7 +336,7 @@ app.MapPost("/admin/api/lyrics/refresh", (HttpContext context, LyricsIndex index
 
 app.MapGet("/admin/api/submissions", (HttpContext context, PendingSubmissionStore submissions) =>
 {
-    if (!IsAdmin(context, settings))
+    if (!IsAdmin(context))
     {
         return Results.Unauthorized();
     }
@@ -321,7 +346,7 @@ app.MapGet("/admin/api/submissions", (HttpContext context, PendingSubmissionStor
 
 app.MapPost("/admin/api/submissions/{id}/approve", (HttpContext context, PendingSubmissionStore submissions, LyricsIndex index, string id) =>
 {
-    if (!IsAdmin(context, settings))
+    if (!IsAdmin(context))
     {
         return Results.Unauthorized();
     }
@@ -343,7 +368,7 @@ app.MapPost("/admin/api/submissions/{id}/approve", (HttpContext context, Pending
 
 app.MapPost("/admin/api/submissions/{id}/reject", (HttpContext context, PendingSubmissionStore submissions, string id) =>
 {
-    if (!IsAdmin(context, settings))
+    if (!IsAdmin(context))
     {
         return Results.Unauthorized();
     }
@@ -356,7 +381,7 @@ app.MapPost("/admin/api/submissions/{id}/reject", (HttpContext context, PendingS
 
 app.MapPut("/admin/api/lyrics/{id}", (HttpContext context, LyricsIndex index, string id, LyricMetadataUpdate update) =>
 {
-    if (!IsAdmin(context, settings))
+    if (!IsAdmin(context))
     {
         return Results.Unauthorized();
     }
@@ -369,16 +394,11 @@ app.MapPut("/admin/api/lyrics/{id}", (HttpContext context, LyricsIndex index, st
 
 app.Run();
 
-static bool IsAdmin(HttpContext context, LyrictifiedSettings settings)
+static bool IsAdmin(HttpContext context)
 {
+    var auth = context.RequestServices.GetRequiredService<AdminAuthService>();
     return context.Request.Cookies.TryGetValue("lyrictified_admin", out var token)
-        && FixedTimeEquals(token, CreateAdminToken(settings));
-}
-
-static string CreateAdminToken(LyrictifiedSettings settings)
-{
-    var bytes = SHA256.HashData(Encoding.UTF8.GetBytes($"lyrictified-admin:{settings.AdminPassword}"));
-    return Convert.ToHexString(bytes).ToLowerInvariant();
+        && auth.IsValidSessionToken(token);
 }
 
 static string GetSubmitterKey(HttpContext context)
@@ -443,13 +463,6 @@ static async Task<LyricSubmissionRequest> ReadSubmissionRequest(HttpContext cont
     throw new ArgumentException("Submission must be JSON or multipart form data.");
 }
 
-static bool FixedTimeEquals(string left, string right)
-{
-    var leftBytes = Encoding.UTF8.GetBytes(left);
-    var rightBytes = Encoding.UTF8.GetBytes(right);
-    return CryptographicOperations.FixedTimeEquals(leftBytes, rightBytes);
-}
-
 static bool ShouldCaptureResponseBody(PathString path)
 {
     return !path.StartsWithSegments("/lyrics", StringComparison.OrdinalIgnoreCase)
@@ -502,5 +515,52 @@ static void VerifyCatalogWriteAccess(string catalogPath)
     catch (Exception exception)
     {
         throw new InvalidOperationException($"Cannot write to catalog directory '{directory}'. Admin changes cannot be saved.", exception);
+    }
+}
+
+static bool TryWriteAdminPasswordHash(string[] args)
+{
+    var hashArgIndex = Array.IndexOf(args, "--hash-admin-password");
+    if (hashArgIndex < 0)
+    {
+        return false;
+    }
+
+    var password = hashArgIndex + 1 < args.Length
+        ? args[hashArgIndex + 1]
+        : ReadPassword("Admin password: ");
+
+    Console.WriteLine(AdminPasswordHasher.Hash(password));
+    return true;
+}
+
+static string ReadPassword(string prompt)
+{
+    Console.Error.Write(prompt);
+    var password = new StringBuilder();
+
+    while (true)
+    {
+        var key = Console.ReadKey(intercept: true);
+        if (key.Key == ConsoleKey.Enter)
+        {
+            Console.Error.WriteLine();
+            return password.ToString();
+        }
+
+        if (key.Key == ConsoleKey.Backspace)
+        {
+            if (password.Length > 0)
+            {
+                password.Length--;
+            }
+
+            continue;
+        }
+
+        if (!char.IsControl(key.KeyChar))
+        {
+            password.Append(key.KeyChar);
+        }
     }
 }
