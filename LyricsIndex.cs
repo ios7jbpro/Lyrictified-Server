@@ -354,7 +354,7 @@ public sealed class LyricsIndex
     private static bool QueryTouchesTitleOrTags(LyricFile file, string query)
     {
         var titleAndTags = $"{file.TitleSearchText} {file.TagsSearchText}";
-        return Normalize(query)
+        return NormalizeQuery(query)
             .Split(' ', StringSplitOptions.RemoveEmptyEntries)
             .Any(word => titleAndTags.Contains(word, StringComparison.Ordinal));
     }
@@ -372,7 +372,7 @@ public sealed class LyricsIndex
             return query;
         }
 
-        var keptWords = Normalize(query)
+        var keptWords = NormalizeQuery(query)
             .Split(' ', StringSplitOptions.RemoveEmptyEntries)
             .Where(word => !patterns.Any(pattern => WildcardMatches(word, pattern)));
 
@@ -381,7 +381,7 @@ public sealed class LyricsIndex
 
     private static string RequestSearchText(SearchRequest request)
     {
-        return Normalize($"{request.Query} {request.Song} {request.Artist} {request.Album}");
+        return NormalizeQuery($"{request.Query} {request.Song} {request.Artist} {request.Album}");
     }
 
     private static bool HasTokenOutsideAllowedText(string requestSearchText, string allowedSearchText)
@@ -439,7 +439,7 @@ public sealed class LyricsIndex
 
     private static int FieldScore(string field, string query)
     {
-        var normalizedQuery = Normalize(query);
+        var normalizedQuery = NormalizeQuery(query);
         if (normalizedQuery.Length == 0)
         {
             return 0;
@@ -470,6 +470,26 @@ public sealed class LyricsIndex
         }
 
         return string.Join(' ', builder.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    private static string NormalizeQuery(string value)
+    {
+        return Normalize(RemoveFeatureCredits(value));
+    }
+
+    private static string RemoveFeatureCredits(string value)
+    {
+        var withoutBracketedCredits = Regex.Replace(
+            value,
+            @"[\(\[\{]\s*(?:feat(?:uring)?\.?|ft\.)\s+[^)\]\}]*[\)\]\}]",
+            " ",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        return Regex.Replace(
+            withoutBracketedCredits,
+            @"(?:^|[\s\-–—])(?:feat(?:uring)?\.?|ft\.)\s+.+$",
+            " ",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     private static string CreateStableId(string relativePath)
