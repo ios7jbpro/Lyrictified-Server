@@ -20,7 +20,6 @@
           "score": 0
         }
       ],
-      "exact": false,
       "ignore": false,
       "reverse": false,
       "ignorePatterns": null,
@@ -46,7 +45,6 @@
           "score": 90
         }
       ],
-      "exact": false,
       "ignore": false,
       "reverse": false,
       "ignorePatterns": null,
@@ -72,7 +70,6 @@
           "score": 5
         }
       ],
-      "exact": false,
       "ignore": false,
       "reverse": false,
       "ignorePatterns": null,

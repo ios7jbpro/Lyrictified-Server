@@ -88,7 +88,6 @@ public sealed class LyricsIndex
                     file.RelativePath,
                     file.Rating,
                     file.Tags,
-                    file.Exact,
                     file.Ignore,
                     file.Reverse,
                     file.IgnorePatterns,
@@ -125,7 +124,6 @@ public sealed class LyricsIndex
             entry.Artist = EmptyToNull(update.Artist);
             entry.Album = EmptyToNull(update.Album);
             entry.Rating = Math.Clamp(update.Rating, 0, 100);
-            entry.Exact = update.Exact;
             entry.Ignore = update.Ignore;
             entry.Reverse = update.Reverse;
             entry.IgnorePatterns = EmptyToNull(update.IgnorePatterns);
@@ -171,7 +169,6 @@ public sealed class LyricsIndex
             AbsolutePath: absolutePath,
             Rating: metadata?.Rating ?? 0,
             Tags: metadata?.Tags ?? [],
-            Exact: metadata?.Exact ?? false,
             Ignore: metadata?.Ignore ?? false,
             Reverse: metadata?.Reverse ?? false,
             IgnorePatterns: metadata?.IgnorePatterns ?? "",
@@ -335,7 +332,7 @@ public sealed class LyricsIndex
 
     private static bool PassesAdminSearchRules(LyricFile file, string requestSearchText)
     {
-        if (file.Exact && HasTokenOutsideAllowedText(requestSearchText, file.ExactSearchText))
+        if (HasTokenOutsideAllowedText(requestSearchText, file.ExactSearchText))
         {
             return false;
         }

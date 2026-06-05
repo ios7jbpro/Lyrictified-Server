@@ -42,7 +42,6 @@ public sealed record LyricFile(
     string AbsolutePath,
     int Rating,
     IReadOnlyList<WeightedTag> Tags,
-    bool Exact,
     bool Ignore,
     bool Reverse,
     string IgnorePatterns,
@@ -71,7 +70,6 @@ public sealed record SearchResult(
     string RelativePath,
     int Rating,
     IReadOnlyList<WeightedTag> Tags,
-    bool Exact,
     bool Ignore,
     bool Reverse,
     string IgnorePatterns,
@@ -84,7 +82,6 @@ public sealed record LyricMetadataUpdate(
     string? Album,
     int Rating,
     IReadOnlyList<WeightedTag> Tags,
-    bool Exact,
     bool Ignore,
     bool Reverse,
     string? IgnorePatterns,
@@ -128,7 +125,6 @@ public sealed class CatalogEntry
     public string? Album { get; set; }
     public int Rating { get; set; }
     public List<WeightedTag> Tags { get; set; } = [];
-    public bool Exact { get; set; }
     public bool Ignore { get; set; }
     public bool Reverse { get; set; }
     public string? IgnorePatterns { get; set; }

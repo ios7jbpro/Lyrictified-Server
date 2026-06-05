@@ -180,7 +180,6 @@ public static class AdminPage
                 <button data-save="${file.id}">Save</button>
               </div>
               <div class="rules">
-                <label class="check"><input type="checkbox" data-field="exact" ${file.exact ? "checked" : ""}> Exact</label>
                 <label class="check"><input type="checkbox" data-field="ignore" ${file.ignore ? "checked" : ""}> Ignore</label>
                 <label class="check"><input type="checkbox" data-field="reverse" ${file.reverse ? "checked" : ""}> Reverse</label>
                 <input class="patterns" aria-label="Ignore patterns" data-field="ignorePatterns" value="${escapeHtml(file.ignorePatterns || "")}" placeholder="patterns like *blue*, *remix*" ${file.ignore ? "" : "hidden"}>
@@ -247,7 +246,6 @@ public static class AdminPage
         album: row.querySelector("[data-field=album]").value,
         rating: Number(row.querySelector("[data-field=rating]").value || 0),
         tags: parseTags(row.querySelector("[data-field=tags]").value),
-        exact: item.querySelector("[data-field=exact]").checked,
         ignore: item.querySelector("[data-field=ignore]").checked,
         reverse: item.querySelector("[data-field=reverse]").checked,
         ignorePatterns: item.querySelector("[data-field=ignorePatterns]").value,
