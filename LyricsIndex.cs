@@ -18,6 +18,9 @@ public sealed class LyricsIndex
     private readonly ILogger<LyricsIndex> _logger;
     private List<LyricFile> _lyrics = [];
     private CatalogFile _catalog = new();
+    private readonly Dictionary<string, ArtistRenamePlan> _pendingRenames = new(StringComparer.Ordinal);
+
+    private static readonly TimeSpan PendingRenameLifetime = TimeSpan.FromMinutes(15);
 
     public LyricsIndex(LyrictifiedSettings settings, ILogger<LyricsIndex> logger)
     {
@@ -103,8 +106,9 @@ public sealed class LyricsIndex
         }
     }
 
-    public LyricFile? UpdateMetadata(string id, LyricMetadataUpdate update)
+    public MetadataUpdateOutcome? UpdateMetadata(string id, LyricMetadataUpdate update)
     {
+        string? newId;
         lock (_lock)
         {
             var current = _lyrics.FirstOrDefault(file => file.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
@@ -120,27 +124,400 @@ public sealed class LyricsIndex
                 _catalog.Entries.Add(entry);
             }
 
-            entry.Title = EmptyToNull(update.Title);
-            entry.Artist = EmptyToNull(update.Artist);
-            entry.Album = EmptyToNull(update.Album);
-            entry.Rating = Math.Clamp(update.Rating, 0, 100);
-            entry.Ignore = update.Ignore;
-            entry.Reverse = update.Reverse;
-            entry.IgnorePatterns = EmptyToNull(update.IgnorePatterns);
-            entry.Offset = Math.Round(Math.Clamp(update.Offset, -2.0, 2.0), 1);
-            entry.Tags = update.Tags
-                .Select(tag => new WeightedTag(tag.Name.Trim(), Math.Clamp(tag.Score, 0, 100)))
-                .Where(tag => tag.Name.Length > 0)
-                .GroupBy(tag => tag.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.OrderByDescending(tag => tag.Score).First())
-                .OrderBy(tag => tag.Name)
-                .ToList();
+            var newArtist = EmptyToNull(update.Artist);
+            var moves = newArtist is not null ? PlanArtistRename(current, newArtist, update) : [];
+            var conflicts = moves.Where(move => move.ConflictSame).ToArray();
 
+            if (conflicts.Length > 0)
+            {
+                var plan = CreatePendingRenamePlan(id, update, moves);
+                return new MetadataUpdateConflict(new ArtistRenameConflictResponse(
+                    plan.ConflictKey,
+                    conflicts.Select(conflict => new ArtistRenameConflict(
+                        conflict.ConflictId,
+                        conflict.SourceRelativePath,
+                        conflict.TargetRelativePath)).ToArray()));
+            }
+
+            ApplyMetadata(entry, update);
+
+            string? editedTarget = null;
+            if (moves.Count > 0)
+            {
+                var actualTargets = ExecuteArtistRename(moves, null);
+                RekeyCatalogEntries(actualTargets);
+                actualTargets.TryGetValue(current.RelativePath.Replace('\\', '/'), out editedTarget);
+            }
+
+            newId = editedTarget is not null ? CreateStableId(editedTarget) : id;
             SaveCatalog();
         }
 
         Refresh();
-        return Find(id);
+        return new MetadataUpdateSuccess(Find(newId)!);
+    }
+
+    public MetadataUpdateOutcome? ResolveArtistRename(string conflictKey, IReadOnlyDictionary<string, string> decisions)
+    {
+        string? newId;
+        lock (_lock)
+        {
+            PruneExpiredPlans();
+            if (!_pendingRenames.TryGetValue(conflictKey, out var plan))
+            {
+                return null;
+            }
+
+            _pendingRenames.Remove(conflictKey);
+
+            var current = _lyrics.FirstOrDefault(file => file.Id.Equals(plan.LyricId, StringComparison.OrdinalIgnoreCase));
+            if (current is null)
+            {
+                return null;
+            }
+
+            var entry = _catalog.Entries.FirstOrDefault(entry => entry.Id.Equals(plan.LyricId, StringComparison.OrdinalIgnoreCase));
+            if (entry is null)
+            {
+                entry = new CatalogEntry { Id = plan.LyricId };
+                _catalog.Entries.Add(entry);
+            }
+
+            ApplyMetadata(entry, plan.Update);
+
+            var actualTargets = ExecuteArtistRename(plan.Moves, decisions);
+            RekeyCatalogEntries(actualTargets);
+
+            actualTargets.TryGetValue(current.RelativePath.Replace('\\', '/'), out var editedTarget);
+            newId = editedTarget is not null ? CreateStableId(editedTarget) : plan.LyricId;
+            SaveCatalog();
+            _logger.LogInformation("Resolved artist rename for {LyricId} (conflict key {ConflictKey})", plan.LyricId, plan.ConflictKey);
+        }
+
+        Refresh();
+        return new MetadataUpdateSuccess(Find(newId)!);
+    }
+
+    private IReadOnlyList<RenameMove> PlanArtistRename(LyricFile current, string newArtist, LyricMetadataUpdate update)
+    {
+        var safeNewArtist = SafePathPart(newArtist);
+        var currentRelative = current.RelativePath.Replace('\\', '/');
+        var pathParts = currentRelative.Split('/');
+        var oldFolderName = pathParts[0];
+
+        if (oldFolderName.Equals(safeNewArtist, StringComparison.OrdinalIgnoreCase))
+        {
+            return [];
+        }
+
+        var moves = new List<RenameMove>();
+        if (pathParts.Length >= 2)
+        {
+            foreach (var file in _lyrics)
+            {
+                var relative = file.RelativePath.Replace('\\', '/');
+                if (!relative.StartsWith(oldFolderName + "/", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var subPath = relative[(oldFolderName.Length + 1)..];
+                moves.Add(CreateMove(relative, Path.Combine(safeNewArtist, subPath).Replace('\\', '/')));
+            }
+        }
+        else
+        {
+            moves.Add(CreateMove(currentRelative, ComputeTopLevelTargetRelativePath(current, safeNewArtist, update)));
+        }
+
+        return moves;
+    }
+
+    private RenameMove CreateMove(string sourceRelative, string targetRelative)
+    {
+        var root = Path.GetFullPath(_settings.LyricsDirectory);
+        var sourceAbsolute = Path.GetFullPath(Path.Combine(root, sourceRelative));
+        var targetAbsolute = Path.GetFullPath(Path.Combine(root, targetRelative));
+
+        if (!sourceAbsolute.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+            || !targetAbsolute.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Artist rename path escaped the lyrics directory.");
+        }
+
+        if (!sourceAbsolute.Equals(targetAbsolute, StringComparison.OrdinalIgnoreCase)
+            && File.Exists(targetAbsolute))
+        {
+            var sameContent = HasSameLyricsContent(sourceAbsolute, targetAbsolute);
+            return new RenameMove
+            {
+                SourceRelativePath = sourceRelative,
+                TargetRelativePath = targetRelative,
+                ConflictSame = sameContent,
+                ConflictDifferent = !sameContent,
+                ConflictId = sameContent ? CreateStableId(sourceRelative) : ""
+            };
+        }
+
+        return new RenameMove
+        {
+            SourceRelativePath = sourceRelative,
+            TargetRelativePath = targetRelative
+        };
+    }
+
+    private static string ComputeTopLevelTargetRelativePath(LyricFile current, string safeArtist, LyricMetadataUpdate update)
+    {
+        var title = EmptyToNull(update.Title) ?? EmptyToNull(current.Title);
+        var album = EmptyToNull(update.Album) ?? EmptyToNull(current.Album);
+        var safeTitle = SafePathPart(title);
+
+        if (!string.IsNullOrEmpty(album))
+        {
+            return Path.Combine(safeArtist, SafePathPart(album), $"{safeTitle}.{current.Format}").Replace('\\', '/');
+        }
+
+        return Path.Combine(safeArtist, $"{safeTitle} - {safeArtist}.{current.Format}").Replace('\\', '/');
+    }
+
+    private IReadOnlyDictionary<string, string> ExecuteArtistRename(
+        IReadOnlyList<RenameMove> moves,
+        IReadOnlyDictionary<string, string>? decisions)
+    {
+        var root = Path.GetFullPath(_settings.LyricsDirectory);
+        var actualTargets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (TryExecuteFolderRename(moves, root, actualTargets))
+        {
+            return actualTargets;
+        }
+
+        foreach (var move in moves)
+        {
+            var sourcePath = Path.GetFullPath(Path.Combine(root, move.SourceRelativePath));
+            if (!File.Exists(sourcePath))
+            {
+                continue;
+            }
+
+            var targetPath = Path.GetFullPath(Path.Combine(root, move.TargetRelativePath));
+            if (move.ConflictSame)
+            {
+                var action = decisions?.GetValueOrDefault(move.ConflictId) ?? "dedupe";
+                if (!action.Equals("overwrite", StringComparison.OrdinalIgnoreCase))
+                {
+                    targetPath = GetAvailableFilePath(targetPath);
+                }
+            }
+            else if (move.ConflictDifferent)
+            {
+                targetPath = GetAvailableFilePath(targetPath);
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+            File.Move(sourcePath, targetPath, overwrite: true);
+
+            var sourceOffset = LyricOffsetHelper.GetOffsetFilePath(sourcePath);
+            if (File.Exists(sourceOffset))
+            {
+                var targetOffset = LyricOffsetHelper.GetOffsetFilePath(targetPath);
+                File.Move(sourceOffset, targetOffset, overwrite: true);
+            }
+
+            var actualRelative = Path.GetRelativePath(root, targetPath).Replace('\\', '/');
+            actualTargets[move.SourceRelativePath] = actualRelative;
+            _logger.LogInformation("Moved lyric file {Source} to {Target}", move.SourceRelativePath, actualRelative);
+        }
+
+        foreach (var sourceDirectory in moves
+            .Select(move => Path.GetDirectoryName(Path.GetFullPath(Path.Combine(root, move.SourceRelativePath)))!)
+            .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            RemoveEmptyDirectories(sourceDirectory, root);
+        }
+
+        return actualTargets;
+    }
+
+    private bool TryExecuteFolderRename(
+        IReadOnlyList<RenameMove> moves,
+        string root,
+        IDictionary<string, string> actualTargets)
+    {
+        if (moves.Count == 0 || moves.Any(move => move.ConflictSame || move.ConflictDifferent))
+        {
+            return false;
+        }
+
+        var oldFolder = GetFirstPathSegment(moves[0].SourceRelativePath);
+        var newFolder = GetFirstPathSegment(moves[0].TargetRelativePath);
+        if (oldFolder.Length == 0 || newFolder.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var move in moves)
+        {
+            var source = move.SourceRelativePath.Replace('\\', '/');
+            var target = move.TargetRelativePath.Replace('\\', '/');
+            if (!source.StartsWith(oldFolder + "/", StringComparison.OrdinalIgnoreCase)
+                || !target.StartsWith(newFolder + "/", StringComparison.OrdinalIgnoreCase)
+                || !source[oldFolder.Length..].Equals(target[newFolder.Length..], StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        var oldDir = Path.GetFullPath(Path.Combine(root, oldFolder));
+        var newDir = Path.GetFullPath(Path.Combine(root, newFolder));
+        if (string.Equals(oldDir, root.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)
+            || !Directory.Exists(oldDir)
+            || Directory.Exists(newDir))
+        {
+            return false;
+        }
+
+        Directory.Move(oldDir, newDir);
+        _logger.LogInformation("Renamed artist directory {Old} to {New}", oldDir, newDir);
+
+        foreach (var move in moves)
+        {
+            actualTargets[move.SourceRelativePath] = move.TargetRelativePath;
+        }
+
+        return true;
+    }
+
+    private void RekeyCatalogEntries(IReadOnlyDictionary<string, string> actualTargets)
+    {
+        foreach (var pair in actualTargets)
+        {
+            var oldId = CreateStableId(pair.Key);
+            var newId = CreateStableId(pair.Value);
+            if (oldId.Equals(newId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var entry = _catalog.Entries.FirstOrDefault(entry => entry.Id.Equals(oldId, StringComparison.OrdinalIgnoreCase));
+            if (entry is null)
+            {
+                continue;
+            }
+
+            _catalog.Entries.RemoveAll(existing =>
+                existing.Id.Equals(newId, StringComparison.OrdinalIgnoreCase)
+                && !ReferenceEquals(existing, entry));
+            entry.Id = newId;
+        }
+    }
+
+    private ArtistRenamePlan CreatePendingRenamePlan(string lyricId, LyricMetadataUpdate update, IReadOnlyList<RenameMove> moves)
+    {
+        PruneExpiredPlans();
+        var plan = new ArtistRenamePlan(
+            ConflictKey: Guid.NewGuid().ToString("N"),
+            LyricId: lyricId,
+            Update: update,
+            Moves: moves,
+            CreatedAt: DateTimeOffset.UtcNow);
+        _pendingRenames.Add(plan.ConflictKey, plan);
+        _logger.LogInformation(
+            "Staged artist rename for {LyricId} with {ConflictCount} conflict(s); conflict key {ConflictKey}",
+            lyricId,
+            moves.Count(move => move.ConflictSame),
+            plan.ConflictKey);
+        return plan;
+    }
+
+    private void PruneExpiredPlans()
+    {
+        var cutoff = DateTimeOffset.UtcNow.Subtract(PendingRenameLifetime);
+        var expired = _pendingRenames.Where(pair => pair.Value.CreatedAt < cutoff).Select(pair => pair.Key).ToArray();
+        foreach (var key in expired)
+        {
+            _pendingRenames.Remove(key);
+        }
+    }
+
+    private static void ApplyMetadata(CatalogEntry entry, LyricMetadataUpdate update)
+    {
+        entry.Title = EmptyToNull(update.Title);
+        entry.Artist = EmptyToNull(update.Artist);
+        entry.Album = EmptyToNull(update.Album);
+        entry.Rating = Math.Clamp(update.Rating, 0, 100);
+        entry.Ignore = update.Ignore;
+        entry.Reverse = update.Reverse;
+        entry.IgnorePatterns = EmptyToNull(update.IgnorePatterns);
+        entry.Offset = Math.Round(Math.Clamp(update.Offset, -2.0, 2.0), 1);
+        entry.Tags = update.Tags
+            .Select(tag => new WeightedTag(tag.Name.Trim(), Math.Clamp(tag.Score, 0, 100)))
+            .Where(tag => tag.Name.Length > 0)
+            .GroupBy(tag => tag.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderByDescending(tag => tag.Score).First())
+            .OrderBy(tag => tag.Name)
+            .ToList();
+    }
+
+    private static string SafePathPart(string? value)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var builder = new StringBuilder((value ?? "").Length);
+        foreach (var character in value ?? "")
+        {
+            builder.Append(invalid.Contains(character) ? '-' : character);
+        }
+
+        var cleaned = builder.ToString().Trim(' ', '.');
+        return cleaned.Length == 0 ? "Unknown" : cleaned;
+    }
+
+    private static bool HasSameLyricsContent(string sourcePath, string targetPath)
+    {
+        var source = File.ReadAllText(sourcePath).ReplaceLineEndings("\n").Trim();
+        var target = File.ReadAllText(targetPath).ReplaceLineEndings("\n").Trim();
+        return source.Equals(target, StringComparison.Ordinal);
+    }
+
+    private static string GetFirstPathSegment(string relativePath)
+    {
+        var index = relativePath.IndexOf('/');
+        return index < 0 ? "" : relativePath[..index];
+    }
+
+    private static string GetAvailableFilePath(string targetPath)
+    {
+        if (!File.Exists(targetPath))
+        {
+            return targetPath;
+        }
+
+        var directory = Path.GetDirectoryName(targetPath)!;
+        var name = Path.GetFileNameWithoutExtension(targetPath);
+        var extension = Path.GetExtension(targetPath);
+        for (var suffix = 2; suffix < 1000; suffix++)
+        {
+            var candidate = Path.Combine(directory, $"{name}-{suffix}{extension}");
+            if (!File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        throw new InvalidOperationException("Could not find an available target filename for the artist rename.");
+    }
+
+    private static void RemoveEmptyDirectories(string directory, string root)
+    {
+        var normalizedRoot = root.TrimEnd('\\', '/');
+        while (directory is not null
+            && directory.Length > normalizedRoot.Length
+            && Directory.Exists(directory)
+            && !Directory.EnumerateFileSystemEntries(directory).Any())
+        {
+            Directory.Delete(directory);
+            directory = Path.GetDirectoryName(directory)!;
+        }
     }
 
     private LyricFile ToLyricFile(string absolutePath, IReadOnlyDictionary<string, CatalogEntry> metadataById)

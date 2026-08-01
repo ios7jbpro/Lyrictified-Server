@@ -52,6 +52,7 @@ public static class AdminPage
     <div class="header-actions">
       <a class="button" href="/submit">Submit lyrics</a>
       <a class="button" href="/admin/requests">Pending requests</a>
+      <a class="button" href="/admin/lrclib-cache">LRCLIB cache</a>
       <form method="post" action="/admin/logout"><button class="secondary">Log out</button></form>
     </div>
   </header>
@@ -251,10 +252,102 @@ public static class AdminPage
         ignorePatterns: item.querySelector("[data-field=ignorePatterns]").value,
         offset: parseFloat(item.querySelector("[data-field=offset]").value)
       };
-      await api(`/admin/api/lyrics/${id}`, { method: "PUT", body: JSON.stringify(update) });
-      status.textContent = "Saved.";
-      await load();
+      try {
+        const result = await saveFile(id, update);
+        if (result.cancelled) {
+          status.textContent = "Rename cancelled.";
+          return;
+        }
+        status.textContent = "Saved.";
+        await load();
+      } catch (error) {
+        if (error.message === "unauthorized") { load(); return; }
+        status.textContent = error.message;
+      }
     });
+
+    async function saveFile(id, update) {
+      const response = await fetch(`/admin/api/lyrics/${id}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(update)
+      });
+      if (response.status === 401) throw new Error("unauthorized");
+      if (response.status === 409) {
+        const conflict = await response.json();
+        const decisions = await promptRenameConflicts(conflict);
+        if (decisions === null) return { cancelled: true };
+        const resolveResponse = await fetch("/admin/api/lyrics/rename-resolve", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ conflictKey: conflict.conflictKey, decisions })
+        });
+        if (resolveResponse.status === 401) throw new Error("unauthorized");
+        if (!resolveResponse.ok) throw new Error(await resolveResponse.text());
+        return { cancelled: false };
+      }
+      if (!response.ok) throw new Error(await response.text());
+      return { cancelled: false };
+    }
+
+    function promptRenameConflicts(conflict) {
+      return new Promise(resolve => {
+        const conflicts = conflict.conflicts.slice();
+        const decisions = {};
+        let index = 0;
+
+        const overlay = document.createElement("div");
+        overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:50;";
+        const dialog = document.createElement("div");
+        dialog.style.cssText = "background:#fff;border-radius:8px;padding:20px;max-width:540px;width:90%;box-shadow:0 8px 30px rgba(0,0,0,.25);font-family:inherit;";
+        dialog.innerHTML = `
+          <strong style="font-size:16px;">Artist rename conflict</strong>
+          <div id="rc-body" style="margin:12px 0;color:#344054;line-height:1.5;font-size:14px;"></div>
+          <div style="display:flex;gap:10px;justify-content:flex-end;">
+            <button type="button" data-rc="cancel" class="secondary">Cancel</button>
+            <button type="button" data-rc="dedupe" class="secondary">Dedupe (-2)</button>
+            <button type="button" data-rc="overwrite" style="background:#c43c3c;border-color:#c43c3c;">Overwrite</button>
+          </div>`;
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+
+        const body = dialog.querySelector("#rc-body");
+
+        function render() {
+          if (index >= conflicts.length) {
+            finish(decisions);
+            return;
+          }
+          const current = conflicts[index];
+          body.innerHTML = `
+            <div style="margin-bottom:6px;">Conflict ${index + 1} of ${conflicts.length}</div>
+            <div style="margin-bottom:4px;"><strong>A file with the same lyrics already exists at:</strong></div>
+            <code style="display:block;background:#f6f7f9;border:1px solid #d9dde5;border-radius:6px;padding:8px;font-size:12px;">${escapeHtml(current.targetRelativePath)}</code>
+            <div style="margin-top:8px;color:#667085;font-size:13px;">Moving: ${escapeHtml(current.sourceRelativePath)}</div>`;
+        }
+
+        function handle(action) {
+          if (action === "cancel") {
+            finish(null);
+            return;
+          }
+          const current = conflicts[index];
+          decisions[current.conflictId] = action;
+          index += 1;
+          render();
+        }
+
+        function finish(result) {
+          overlay.remove();
+          resolve(result);
+        }
+
+        dialog.querySelectorAll("[data-rc]").forEach(button => {
+          button.addEventListener("click", () => handle(button.dataset.rc));
+        });
+        render();
+      });
+    }
 
     list.addEventListener("change", event => {
       if (event.target.dataset.field !== "ignore") return;

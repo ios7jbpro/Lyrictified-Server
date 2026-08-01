@@ -22,7 +22,9 @@ settings = settings with
 {
     LyricsDirectory = Path.GetFullPath(settings.LyricsDirectory, builder.Environment.ContentRootPath),
     CatalogPath = Path.GetFullPath(settings.CatalogPath, builder.Environment.ContentRootPath),
-    PendingSubmissionsPath = Path.GetFullPath(settings.PendingSubmissionsPath, builder.Environment.ContentRootPath)
+    PendingSubmissionsPath = Path.GetFullPath(settings.PendingSubmissionsPath, builder.Environment.ContentRootPath),
+    LrclibCachePath = Path.GetFullPath(settings.LrclibCachePath, builder.Environment.ContentRootPath),
+    LrclibCacheDirectory = Path.GetFullPath(settings.LrclibCacheDirectory, builder.Environment.ContentRootPath)
 };
 
 if (settings.Port is < 1 or > 65535)
@@ -38,14 +40,20 @@ if (string.IsNullOrWhiteSpace(settings.BindAddress))
 Directory.CreateDirectory(settings.LyricsDirectory);
 Directory.CreateDirectory(Path.GetDirectoryName(settings.CatalogPath)!);
 Directory.CreateDirectory(Path.GetDirectoryName(settings.PendingSubmissionsPath)!);
+Directory.CreateDirectory(settings.LrclibCacheDirectory);
+Directory.CreateDirectory(Path.GetDirectoryName(settings.LrclibCachePath)!);
 VerifyCatalogWriteAccess(settings.CatalogPath);
 VerifyCatalogWriteAccess(settings.PendingSubmissionsPath);
+VerifyCatalogWriteAccess(settings.LrclibCachePath);
 
 builder.Services.AddSingleton(settings);
 builder.Services.AddSingleton<AdminAuthService>();
 builder.Services.AddSingleton<LyricsIndex>();
 builder.Services.AddSingleton<PendingSubmissionStore>();
+builder.Services.AddSingleton<LrclibCacheStore>();
+builder.Services.AddSingleton<LrclibSearchService>();
 builder.Services.AddHostedService<TrayIconService>();
+builder.Services.AddHostedService<LrclibCacheAutoCleanService>();
 builder.WebHost.UseUrls($"http://{settings.BindAddress}:{settings.Port}");
 
 var app = builder.Build();
@@ -157,6 +165,7 @@ app.MapGet("/assets/logo", (IWebHostEnvironment environment) =>
 
 app.MapGet("/search", (
     LyricsIndex index,
+    LrclibSearchService lrclibSearch,
     string? q,
     string? song,
     string? artist,
@@ -179,7 +188,14 @@ app.MapGet("/search", (
         return Results.BadRequest(new { error = "Artist search requires song or q. Use /search?song=...&artist=... or /search?q=artist%20song ." });
     }
 
-    return Results.Ok(new { results = index.Search(request) });
+    var results = index.Search(request);
+
+    if (results.Count == 0)
+    {
+        lrclibSearch.TriggerBackgroundSearch(request);
+    }
+
+    return Results.Ok(new { results });
 });
 
 app.MapGet("/lyrics/{id}/raw", (LyricsIndex index, string id) =>
@@ -278,6 +294,12 @@ app.MapGet("/admin/requests", (HttpContext context) =>
 {
     context.Response.Headers.CacheControl = "no-store";
     return Results.Content(AdminRequestsPage.Html, "text/html; charset=utf-8");
+});
+
+app.MapGet("/admin/lrclib-cache", (HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.Content(AdminLrclibCachePage.Html, "text/html; charset=utf-8");
 });
 
 app.MapPost("/admin/login", async (HttpContext context, AdminAuthService auth) =>
@@ -386,10 +408,83 @@ app.MapPut("/admin/api/lyrics/{id}", (HttpContext context, LyricsIndex index, st
         return Results.Unauthorized();
     }
 
-    var updated = index.UpdateMetadata(id, update);
-    return updated is null
-        ? Results.NotFound(new { error = "Lyrics file was not found." })
-        : Results.Ok(updated);
+    var outcome = index.UpdateMetadata(id, update);
+    return outcome switch
+    {
+        null => Results.NotFound(new { error = "Lyrics file was not found." }),
+        MetadataUpdateSuccess(var file) => Results.Ok(file),
+        MetadataUpdateConflict(var conflicts) => Results.Conflict(conflicts),
+        _ => Results.Problem()
+    };
+});
+
+app.MapPost("/admin/api/lyrics/rename-resolve", (HttpContext context, LyricsIndex index, RenameResolveRequest request) =>
+{
+    if (!IsAdmin(context))
+    {
+        return Results.Unauthorized();
+    }
+
+    var outcome = index.ResolveArtistRename(request.ConflictKey, request.Decisions);
+    return outcome switch
+    {
+        null => Results.NotFound(new { error = "Pending artist rename was not found or expired." }),
+        MetadataUpdateSuccess(var file) => Results.Ok(file),
+        _ => Results.Problem()
+    };
+});
+
+app.MapGet("/admin/api/lrclib-cache", (HttpContext context, LrclibCacheStore cache) =>
+{
+    if (!IsAdmin(context))
+    {
+        return Results.Unauthorized();
+    }
+
+    return Results.Ok(new { tracks = cache.All });
+});
+
+app.MapPost("/admin/api/lrclib-cache/{id}/approve", (HttpContext context, LrclibCacheStore cache, LyricsIndex index, string id) =>
+{
+    if (!IsAdmin(context))
+    {
+        return Results.Unauthorized();
+    }
+
+    var track = cache.Approve(id, index);
+    if (track is null)
+    {
+        return Results.NotFound(new { error = "Cached track was not found." });
+    }
+
+    index.Refresh();
+    return Results.Ok(new { track, indexedFiles = index.All.Count });
+});
+
+app.MapPost("/admin/api/lrclib-cache/{id}/reject", (HttpContext context, LrclibCacheStore cache, string id) =>
+{
+    if (!IsAdmin(context))
+    {
+        return Results.Unauthorized();
+    }
+
+    var track = cache.Reject(id);
+    return track is null
+        ? Results.NotFound(new { error = "Cached track was not found." })
+        : Results.Ok(new { track });
+});
+
+app.MapGet("/admin/api/lrclib-cache/{id}/preview", (HttpContext context, LrclibCacheStore cache, string id) =>
+{
+    if (!IsAdmin(context))
+    {
+        return Results.Unauthorized();
+    }
+
+    var lyrics = cache.GetLyrics(id);
+    return lyrics is null
+        ? Results.NotFound(new { error = "Cached track was not found." })
+        : Results.Ok(new { lyrics });
 });
 
 app.Run();

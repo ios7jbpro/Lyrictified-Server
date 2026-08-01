@@ -9,6 +9,10 @@ public sealed record LyrictifiedSettings
     public string LyricsDirectory { get; init; } = "lyrics";
     public string CatalogPath { get; init; } = "data/catalog.json";
     public string PendingSubmissionsPath { get; init; } = "data/pending-submissions.json";
+    public string LrclibCachePath { get; init; } = "data/lrclib-cache.json";
+    public string LrclibCacheDirectory { get; init; } = "lrclib-cache";
+    public int LrclibCacheAutoCleanMaxAgeDays { get; init; } = 3;
+    public int LrclibCacheAutoCleanCheckIntervalHours { get; init; } = 1;
     public string AdminPasswordHash { get; init; } = "";
     public string AdminPassword { get; init; } = "";
 }
@@ -87,6 +91,41 @@ public sealed record LyricMetadataUpdate(
     string? IgnorePatterns,
     double Offset);
 
+public abstract record MetadataUpdateOutcome;
+
+public sealed record MetadataUpdateSuccess(LyricFile File) : MetadataUpdateOutcome;
+
+public sealed record MetadataUpdateConflict(ArtistRenameConflictResponse Conflicts) : MetadataUpdateOutcome;
+
+public sealed record ArtistRenameConflict(
+    string ConflictId,
+    string SourceRelativePath,
+    string TargetRelativePath);
+
+public sealed record ArtistRenameConflictResponse(
+    string ConflictKey,
+    IReadOnlyList<ArtistRenameConflict> Conflicts);
+
+public sealed record RenameResolveRequest(
+    string ConflictKey,
+    IReadOnlyDictionary<string, string> Decisions);
+
+public sealed record ArtistRenamePlan(
+    string ConflictKey,
+    string LyricId,
+    LyricMetadataUpdate Update,
+    IReadOnlyList<RenameMove> Moves,
+    DateTimeOffset CreatedAt);
+
+public sealed class RenameMove
+{
+    public required string SourceRelativePath { get; init; }
+    public required string TargetRelativePath { get; init; }
+    public bool ConflictSame { get; init; }
+    public bool ConflictDifferent { get; init; }
+    public string ConflictId { get; init; } = "";
+}
+
 public sealed record LyricSubmissionRequest(
     string? Title,
     string? Artist,
@@ -141,4 +180,33 @@ public sealed class SubmissionRateLimitEntry
 {
     public string SubmitterKey { get; set; } = "";
     public DateTimeOffset SubmittedAt { get; set; }
+}
+
+public sealed record LrclibCachedTrack(
+    string Id,
+    string Title,
+    string Artist,
+    string Album,
+    double? Duration,
+    string Format,
+    string RelativePath,
+    string AbsolutePath,
+    DateTimeOffset CachedAt,
+    string SearchQuery);
+
+public sealed class LrclibCacheFile
+{
+    public List<LrclibCachedTrack> Tracks { get; set; } = [];
+}
+
+public sealed class LrclibApiTrack
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public string ArtistName { get; set; } = "";
+    public string AlbumName { get; set; } = "";
+    public double? Duration { get; set; }
+    public bool Instrumental { get; set; }
+    public string? PlainLyrics { get; set; }
+    public string? SyncedLyrics { get; set; }
 }
