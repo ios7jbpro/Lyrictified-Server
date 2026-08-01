@@ -99,3 +99,5 @@ Data/runtime directories (not source): `lyrics/`, `data/`, `lrclib-cache/`. `bin
 ## Commit Style
 
 Repo history uses conventional-commit prefixes: `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`. Match this style when committing.
+
+Agents must commit after every change they make; do not leave the working tree dirty. Stage only the files related to the change (e.g. only `.cs` files, never config/JSON unless the change requires it).
